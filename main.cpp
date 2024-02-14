@@ -35,7 +35,7 @@ struct Pattern
     std::vector<hash_t> data;
 };
 
-void buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
+bool buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
 {
     const std::vector<Dataset::Session>& sessions = dataset.sessions;
 
@@ -50,6 +50,14 @@ void buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
         }
     }
 
+    if (hashToIndex.size() <= 2)
+    {
+        histogram.bins.clear();
+        histogram.hashesSortedByFreq.clear();
+        histogram.hashToIndex.clear();
+        histogram.indexToHash.clear();
+        return false;
+    }
     assert(hashToIndex.size() > 2);
 
     // assign indices
@@ -106,6 +114,8 @@ void buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
 
     std::sort(hashesSortedByFreq.begin(), hashesSortedByFreq.end(),
               [](const std::pair<hash_t, uint64_t>& lhs, const std::pair<hash_t, uint64_t>& rhs) { return lhs.second > rhs.second; });
+
+    return true;
 }
 
 void generateDataSet(Dataset& dataset, size_t numSessions = 100, int numDifferentHashes = 100)
@@ -116,10 +126,9 @@ void generateDataSet(Dataset& dataset, size_t numSessions = 100, int numDifferen
     dataset.sessions.reserve(numSessions);
     for (size_t i = 0; i < numSessions; i++)
     {
-        dataset.sessions.emplace_back();
-        Dataset::Session& session = dataset.sessions.back();
+        Dataset::Session& session = dataset.sessions.emplace_back();
 
-        int numInstances = (rand() % 20) + 10;
+        int numInstances = (rand() % 200) + 200;
         session.uniqueHashes.clear();
         for (size_t j = 0; j < (size_t)numInstances; j++)
         {
@@ -173,6 +182,7 @@ Pattern findFrequentPattern(const Dataset& dataset, const Histogram& histogram, 
     size_t totalSessionsCount = dataset.sessions.size();
     size_t numSessionsThreshold = size_t(0.5 + double(totalSessionsCount) * double(threshold));
     numSessionsThreshold = std::max(numSessionsThreshold, size_t(1));
+    numSessionsThreshold = std::min(numSessionsThreshold, totalSessionsCount);
 
     Pattern pattern;
     for (size_t step = 0; step < histogram.hashesSortedByFreq.size(); step++)
@@ -223,8 +233,39 @@ void removePatternFromDataset(Dataset& dataset, const Pattern& pattern)
     }
 }
 
+std::vector<size_t> getSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+{
+    std::vector<size_t> res;
 
-void printSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+    if (pattern.data.empty())
+    {
+        return res;
+    }
+
+    size_t sessionId = 0;
+    for (const Dataset::Session& session : dataset.sessions)
+    {
+        bool patternFound = true;
+        for (size_t i = 0; i < pattern.data.size(); i++)
+        {
+            auto it = session.uniqueHashes.find(pattern.data[i]);
+            if (it == session.uniqueHashes.end())
+            {
+                patternFound = false;
+                break;
+            }
+        }
+
+        if (patternFound)
+        {
+            res.emplace_back(sessionId);
+        }
+        sessionId++;
+    }
+    return res;
+}
+
+void printSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern, bool detailed = true)
 {
     if (pattern.data.empty())
     {
@@ -249,23 +290,25 @@ void printSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pat
         if (patternFound)
         {
             numMatchedSessions++;
-            printf("id[%d] = { ", sessionId);
-            for (const hash_t& hash : session.hashes)
-            {
-                printf("%d ", int(hash));
-            }
 
-            printf("}\n");
+            if (detailed)
+            {
+                printf("id[%d] = { ", sessionId);
+                for (const hash_t& hash : session.hashes)
+                {
+                    printf("%d ", int(hash));
+                }
+
+                printf("}\n");
+            }
         }
 
         sessionId++;
     }
 
-
-    printf("Total: %d sessions, %3.2f %%\n", numMatchedSessions, 100.0 * double(numMatchedSessions) / double(dataset.sessions.size()));
-
+    printf("Total: %d of %d sessions, %3.2f %%\n", numMatchedSessions, int(dataset.sessions.size()),
+           100.0 * double(numMatchedSessions) / double(dataset.sessions.size()));
 }
-
 
 void printDataset(const Dataset& dataset)
 {
@@ -274,7 +317,7 @@ void printDataset(const Dataset& dataset)
     for (const Dataset::Session& session : dataset.sessions)
     {
         printf("id[%d] = { ", sessionId);
-        for (const hash_t& hash: session.hashes)
+        for (const hash_t& hash : session.hashes)
         {
             printf("%d ", int(hash));
         }
@@ -289,7 +332,7 @@ void printPattern(const Pattern& pattern)
     //
     for (size_t i = 0; i < pattern.data.size(); i++)
     {
-        if (i>0)
+        if (i > 0)
         {
             printf(", ");
         }
@@ -300,16 +343,25 @@ void printPattern(const Pattern& pattern)
     printf("\n");
 }
 
+struct Solution
+{
+    Pattern pattern;
+    Pattern patternImproved;
+
+    // matched session ids
+    std::vector<size_t> sessionIds;
+};
+
 int main()
 {
     printf("Generate dataset\n");
     Dataset dataset;
-    generateDataSet(dataset, 60, 10);
+    generateDataSet(dataset, 60000, 75);
     printf("Done\n");
 
     Dataset datasetOriginal = dataset;
 
-    printDataset(dataset);
+    // printDataset(dataset);
 
     printf("Build histogram\n");
     Histogram histogram;
@@ -320,26 +372,66 @@ int main()
     // find frequent patterns
     printf("\n");
     printf("Freq patterns\n");
-    for (int step = 0; step < 5; step++)
+
+    std::vector<Solution> solutions;
+
+    int kMaxNumberOfPatterns = 40;
+    for (int step = 0; step < kMaxNumberOfPatterns; step++)
     {
-        Pattern pattern = findFrequentPattern(dataset, histogram, 0.25f);
-        printPattern(pattern);
-        printSessionsThatContainsPattern(dataset, pattern);
+        Solution& s = solutions.emplace_back();
+        s.pattern = findFrequentPattern(dataset, histogram, 0.2f);
+        s.sessionIds = getSessionsThatContainsPattern(dataset, s.pattern);
 
-        removePatternFromDataset(dataset, pattern);
-        buildHistogramAndFreq(dataset, histogram);
-        printf("\n");
-
-        if (pattern.data.size() <= 2)
+        removePatternFromDataset(dataset, s.pattern);
+        if (!buildHistogramAndFreq(dataset, histogram))
         {
-            //this pattern is too smal (not interesting)
-            //stop looking for more patterns
+            // all sessions are now empty
+            printf("Solved. All sessions are now empty\n");
+            break;
+        }
+        // printf("\n");
+
+        if (s.pattern.data.size() <= 2)
+        {
+            // this pattern is too smal (no longer interesting)
+            // stop looking for more patterns
+            printf("Stop. The resulting pattern is too short (%d in %d sessions). No longer interesting in solving\n", int(s.pattern.data.size()),
+                   int(s.sessionIds.size()));
+            solutions.pop_back();
             break;
         }
     }
 
     // step #2
     // try to improve existing patterns (since we are removing parts of the dataset we can lose some information)
+    for (size_t si = 0; si < solutions.size(); si++)
+    {
+        Dataset tempDataset;
+        // copy sessions from original dataset to temp dataset
+        Solution& s = solutions[si];
+        for (size_t i = 0; i < s.sessionIds.size(); i++)
+        {
+            size_t sessionId = s.sessionIds[i];
+            tempDataset.sessions.push_back(datasetOriginal.sessions[sessionId]);
+        }
+
+        buildHistogramAndFreq(tempDataset, histogram);
+
+        s.patternImproved = findFrequentPattern(dataset, histogram, 1.0f);
+
+        if (s.patternImproved.data.size() > s.pattern.data.size())
+        {
+            printf("-> Improved pattern:\n");
+            printPattern(s.patternImproved);
+            printSessionsThatContainsPattern(datasetOriginal, s.patternImproved, false);
+        }
+        else
+        {
+            printf("-> Pattern:\n");
+            printPattern(s.pattern);
+            printSessionsThatContainsPattern(datasetOriginal, s.pattern, false);
+        }
+    }
 
     printf("Existing\n");
     return 0;
