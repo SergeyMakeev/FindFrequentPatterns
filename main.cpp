@@ -11,7 +11,9 @@ struct Dataset
 {
     struct Session
     {
-        std::vector<hash_t> hashes;
+        std::unordered_set<hash_t> uniqueHashes; // we don't really need hash table here, sorted array will work fine
+        std::vector<hash_t> hashes; // linearized version of the above unordered_set
+
     };
 
     std::vector<Session> sessions;
@@ -27,6 +29,11 @@ struct Histogram
     std::vector<std::pair<hash_t, uint64_t>> hashesSortedByFreq;
 
     std::vector<uint64_t> bins;
+};
+
+struct Pattern
+{
+    std::vector<hash_t> data;
 };
 
 void buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
@@ -95,7 +102,6 @@ void buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
     {
         hash_t hash = indexToHash[bucketIndex];
         uint64_t freq = bins[bucketIndex];
-
         hashesSortedByFreq.emplace_back(hash, freq);
     }
 
@@ -108,8 +114,6 @@ void generateDataSet(Dataset& dataset, size_t numSessions = 1000)
     srand(1379);
     dataset.clear();
 
-    std::unordered_set<hash_t> uniqueHashes;
-
     dataset.sessions.reserve(numSessions);
     for (size_t i = 0; i < numSessions; i++)
     {
@@ -117,32 +121,66 @@ void generateDataSet(Dataset& dataset, size_t numSessions = 1000)
         Dataset::Session& session = dataset.sessions.back();
 
         int numInstances = (rand() % 5000) + 5000;
-        uniqueHashes.clear();
+        session.uniqueHashes.clear();
         for (size_t j = 0; j < (size_t)numInstances; j++)
         {
             hash_t randomHash = rand() % 20000;
-            uniqueHashes.insert(randomHash);
+            session.uniqueHashes.insert(randomHash);
         }
 
-        session.hashes.reserve(uniqueHashes.size());
-        session.hashes.insert(session.hashes.end(), uniqueHashes.begin(), uniqueHashes.end());
+        session.hashes.reserve(session.uniqueHashes.size());
+        session.hashes.insert(session.hashes.end(), session.uniqueHashes.begin(), session.uniqueHashes.end());
     }
+}
+
+int getNumberOfSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+{
+    int numSessionsThatContainsPattern = 0;
+
+    for (const Dataset::Session& session : dataset.sessions)
+    {
+        bool patternFound = true;
+        for (size_t i = 0; i < pattern.data.size(); i++)
+        {
+            auto it = session.uniqueHashes.find(pattern.data[i]);
+            if (it == session.uniqueHashes.end())
+            {
+                patternFound = false;
+                break;
+            }
+        }
+
+        if (patternFound)
+        {
+            numSessionsThatContainsPattern++;
+        }
+    }
+
+    //
+    return numSessionsThatContainsPattern;
 }
 
 int main()
 {
     printf("Generate dataset\n");
-
     Dataset dataset;
     generateDataSet(dataset);
-
     printf("Done\n");
 
     printf("Build histogram\n");
     Histogram histogram;
     buildHistogramAndFreq(dataset, histogram);
-
     printf("Done\n");
+
+    Pattern pattern;
+
+
+    for (int step = 0; step < 100; step++)
+    {
+        pattern.data.emplace_back(histogram.hashesSortedByFreq[step].first);
+        int numSessions = getNumberOfSessionsThatContainsPattern(dataset, pattern);
+        printf("Pattern size: %d, Num sessions: %d\n", int(pattern.data.size()), numSessions);
+    }
 
     printf("Existing\n");
     return 0;
