@@ -12,8 +12,7 @@ struct Dataset
     struct Session
     {
         std::unordered_set<hash_t> uniqueHashes; // we don't really need hash table here, sorted array will work fine
-        std::vector<hash_t> hashes; // linearized version of the above unordered_set
-
+        std::vector<hash_t> hashes;              // linearized version of the above unordered_set
     };
 
     std::vector<Session> sessions;
@@ -124,7 +123,8 @@ void generateDataSet(Dataset& dataset, size_t numSessions = 1000)
         session.uniqueHashes.clear();
         for (size_t j = 0; j < (size_t)numInstances; j++)
         {
-            hash_t randomHash = rand() % 20000;
+            //hash_t randomHash = rand() % 20000;
+            hash_t randomHash = rand() % 300;
             session.uniqueHashes.insert(randomHash);
         }
 
@@ -133,9 +133,9 @@ void generateDataSet(Dataset& dataset, size_t numSessions = 1000)
     }
 }
 
-int getNumberOfSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+size_t getNumberOfSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
 {
-    int numSessionsThatContainsPattern = 0;
+    size_t numSessionsThatContainsPattern = 0;
 
     for (const Dataset::Session& session : dataset.sessions)
     {
@@ -160,6 +160,28 @@ int getNumberOfSessionsThatContainsPattern(const Dataset& dataset, const Pattern
     return numSessionsThatContainsPattern;
 }
 
+// threshold = 0.3f mean stop adding more hashes to the pattern (and return it) if less than 30% of the sessions have this pattern
+Pattern findFrequentPattern(const Dataset& dataset, const Histogram& histogram, float threshold = 0.3f)
+{
+    //
+    size_t totalSessionsCount = dataset.sessions.size();
+    size_t numSessionsThreshold = size_t(double(totalSessionsCount) * double(threshold));
+
+    Pattern pattern;
+    for (size_t step = 0; step < histogram.hashesSortedByFreq.size(); step++)
+    {
+        pattern.data.emplace_back(histogram.hashesSortedByFreq[step].first);
+        size_t numSessions = getNumberOfSessionsThatContainsPattern(dataset, pattern);
+        if (numSessions < numSessionsThreshold)
+        {
+            // remove the last hash from the pattern
+            pattern.data.pop_back();
+            break;
+        }
+    }
+    return pattern;
+}
+
 int main()
 {
     printf("Generate dataset\n");
@@ -172,15 +194,10 @@ int main()
     buildHistogramAndFreq(dataset, histogram);
     printf("Done\n");
 
-    Pattern pattern;
+    Pattern pattern = findFrequentPattern(dataset, histogram);
 
-
-    for (int step = 0; step < 100; step++)
-    {
-        pattern.data.emplace_back(histogram.hashesSortedByFreq[step].first);
-        int numSessions = getNumberOfSessionsThatContainsPattern(dataset, pattern);
-        printf("Pattern size: %d, Num sessions: %d\n", int(pattern.data.size()), numSessions);
-    }
+    size_t numSessions = getNumberOfSessionsThatContainsPattern(dataset, pattern);
+    printf("Pattern size: %d, Num sessions: %d\n", int(pattern.data.size()), int(numSessions));
 
     printf("Existing\n");
     return 0;
