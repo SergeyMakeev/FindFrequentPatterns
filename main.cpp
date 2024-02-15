@@ -5,6 +5,8 @@
 #include <unordered_set>
 #include <vector>
 
+#define REMOVE_EXISTING_PATTERN_FROM_DATA
+
 using hash_t = uint64_t;
 
 struct Dataset
@@ -13,6 +15,14 @@ struct Dataset
     {
         std::unordered_set<hash_t> uniqueHashes; // we don't really need hash table here, sorted array will work fine
         std::vector<hash_t> hashes;              // linearized version of the above unordered_set
+
+        Session() = default;
+        Session(std::initializer_list<hash_t> list)
+        {
+            uniqueHashes = list;
+            hashes.insert(hashes.end(), uniqueHashes.begin(), uniqueHashes.end());
+            std::sort(hashes.begin(), hashes.end()); // to beautify print
+        }
     };
 
     std::vector<Session> sessions;
@@ -22,12 +32,19 @@ struct Dataset
 
 struct Histogram
 {
-    std::unordered_map<hash_t, size_t> hashToIndex;
-    std::vector<hash_t> indexToHash;
+    std::unordered_map<hash_t, size_t> _hashToIndex;
+    std::vector<hash_t> _indexToHash;
 
     std::vector<std::pair<hash_t, uint64_t>> hashesSortedByFreq;
 
     std::vector<uint64_t> bins;
+
+    void trim_left()
+    {
+        bins.erase(bins.begin());
+        hash_t mostPopularHash = hashesSortedByFreq.front().first;
+        hashesSortedByFreq.erase(hashesSortedByFreq.begin());
+    }
 };
 
 struct Pattern
@@ -40,7 +57,7 @@ bool buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
     const std::vector<Dataset::Session>& sessions = dataset.sessions;
 
     // find unique hashes
-    std::unordered_map<hash_t, size_t>& hashToIndex = histogram.hashToIndex;
+    std::unordered_map<hash_t, size_t>& hashToIndex = histogram._hashToIndex;
     hashToIndex.clear();
     for (const Dataset::Session& session : sessions)
     {
@@ -54,14 +71,14 @@ bool buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
     {
         histogram.bins.clear();
         histogram.hashesSortedByFreq.clear();
-        histogram.hashToIndex.clear();
-        histogram.indexToHash.clear();
+        histogram._hashToIndex.clear();
+        histogram._indexToHash.clear();
         return false;
     }
     assert(hashToIndex.size() > 2);
 
     // assign indices
-    std::vector<hash_t>& indexToHash = histogram.indexToHash;
+    std::vector<hash_t>& indexToHash = histogram._indexToHash;
     indexToHash.clear();
     indexToHash.resize(hashToIndex.size());
 
@@ -115,10 +132,57 @@ bool buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
     std::sort(hashesSortedByFreq.begin(), hashesSortedByFreq.end(),
               [](const std::pair<hash_t, uint64_t>& lhs, const std::pair<hash_t, uint64_t>& rhs) { return lhs.second > rhs.second; });
 
+    histogram._indexToHash.clear();
+    histogram._hashToIndex.clear();
     return true;
 }
 
-void generateDataSet(Dataset& dataset, size_t numSessions = 100, int numDifferentHashes = 100)
+void generateToyDataSet(Dataset& dataset)
+{
+    /*
+    dataset.clear();
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5, 55}));
+    dataset.sessions.emplace_back(Dataset::Session({2, 3, 4, 5, 55, 66}));
+    dataset.sessions.emplace_back(Dataset::Session({7, 2, 3, 4, 66, 77}));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 7, 9, 10, 55}));
+    dataset.sessions.emplace_back(Dataset::Session({2, 3, 7, 55}));
+    */
+
+    // clang-format off
+    dataset.clear();
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5,    7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5,    7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
+    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
+    // clang-format on
+
+
+    // most popular patterns
+    //   4, 5, 6
+    //   2, 4, 5, 6
+}
+
+
+
+void generateRandomDataSet(Dataset& dataset, size_t numSessions = 100, int numDifferentHashes = 100)
 {
     srand(1379);
     dataset.clear();
@@ -356,7 +420,8 @@ int main()
 {
     printf("Generate dataset\n");
     Dataset dataset;
-    generateDataSet(dataset, 60000, 75);
+    // generateRandomDataSet(dataset, 60000, 75);
+    generateToyDataSet(dataset);
     printf("Done\n");
 
     Dataset datasetOriginal = dataset;
@@ -382,6 +447,8 @@ int main()
         s.pattern = findFrequentPattern(dataset, histogram, 0.2f);
         s.sessionIds = getSessionsThatContainsPattern(dataset, s.pattern);
 
+#ifdef REMOVE_EXISTING_PATTERN_FROM_DATA
+        // remove frequent pattern from data
         removePatternFromDataset(dataset, s.pattern);
         if (!buildHistogramAndFreq(dataset, histogram))
         {
@@ -390,13 +457,17 @@ int main()
             break;
         }
         // printf("\n");
+#else
+        // remove most popular item
+        histogram.trim_left();
+#endif
 
         if (s.pattern.data.size() <= 2)
         {
             // this pattern is too smal (no longer interesting)
             // stop looking for more patterns
-            printf("Stop. The resulting pattern is too short (%d in %d sessions). No longer interesting in solving\n", int(s.pattern.data.size()),
-                   int(s.sessionIds.size()));
+            printf("Stop. The resulting pattern is too short (%d in %d sessions). No longer interesting in solving\n",
+                   int(s.pattern.data.size()), int(s.sessionIds.size()));
             solutions.pop_back();
             break;
         }
