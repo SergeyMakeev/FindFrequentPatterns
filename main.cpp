@@ -175,9 +175,52 @@ void generateToyDataSet(Dataset& dataset)
     // clang-format on
 
 
-    // most popular patterns
-    //   4, 5, 6
-    //   2, 4, 5, 6
+    /*
+        Patterns in the above dataset (generated using brute force algorithm):
+
+        4, 5
+        Total: 22 of 22 sessions, 100.00 %
+        2, 4
+        Total: 18 of 22 sessions, 81.82 %
+        2, 5
+        Total: 18 of 22 sessions, 81.82 %
+
+        2, 4, 5
+        Total: 18 of 22 sessions, 81.82 %
+
+        1, 2, 4, 5
+        Total: 12 of 22 sessions, 54.55 %
+        2, 3, 4, 5
+        Total: 12 of 22 sessions, 54.55 %
+        2, 4, 5, 6
+        Total: 12 of 22 sessions, 54.55 %
+
+        3, 4, 5, 7, 9
+        Total: 8 of 22 sessions, 36.36 %
+        3, 4, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+        3, 4, 5, 7, 8
+        Total: 8 of 22 sessions, 36.36 %
+        2, 3, 4, 7, 8
+        Total: 8 of 22 sessions, 36.36 %
+        2, 3, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+
+        2, 3, 4, 5, 7, 8
+        Total: 8 of 22 sessions, 36.36 %
+        2, 3, 4, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+        2, 3, 5, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+        2, 4, 5, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+
+        2, 3, 4, 5, 7, 8, 9
+        Total: 8 of 22 sessions, 36.36 %
+
+        2, 3, 4, 5, 6, 7, 8, 9
+        Total: 6 of 22 sessions, 27.27 %
+    */
 }
 
 
