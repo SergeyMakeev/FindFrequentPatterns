@@ -93,7 +93,7 @@ struct Bitset
     {
         assert(a.bitwords.size() == b.bitwords.size());
 
-        Bitset res(a.bitwords.size());
+        Bitset res(a.bitwords.size() * Bitset::kBitwordSizeInBits);
         size_t numWords = a.bitwords.size();
         for (size_t i = 0; i < numWords; i++)
         {
@@ -308,7 +308,7 @@ int main()
 {
     printf("Generate dataset\n");
     Dataset dataset;
-    generateRandomDataSet(dataset, 50, 10, 20, 15);
+    generateRandomDataSet(dataset, 5000, 1000, 2000, 3000);
     // generateToyDataSet(dataset);
 
     // step1. Generate dataset mapping
@@ -340,9 +340,12 @@ int main()
 
     // step3. Find bitsets intersections and accumulate.
     // Note: O(N^2) where N = number of transactions
+    printf("Serch for freq. patterns\n");
     std::unordered_map<Bitset, size_t> patterns;
     for (size_t i = 0; i < bitsetTransactions.size(); i++)
     {
+        printf("%3.2f %%                      \r", 100.0 * double(i+1) / double(bitsetTransactions.size()));
+
         const Bitset& a = bitsetTransactions[i];
         for (size_t j = i + 1; j < bitsetTransactions.size(); j++)
         {
@@ -367,8 +370,13 @@ int main()
         }
     }
 
+    printf("\n");
+
+    printf("Done\n");
+
     // step 4 (optional)
     // "Linearize" patterns and sort by popularity/length
+    printf("Linearize/uncompress patters\n");
     struct Pattern
     {
         std::vector<id_t> data;
@@ -398,6 +406,7 @@ int main()
     std::sort(linPatterns.begin(), linPatterns.end(), [](const Pattern& a, const Pattern& b) { return a.data.size() > b.data.size(); });
 
     // step5 (print results)
+    printf("Print results\n");
     printDataset(dataset);
 
     printf("---------------\n");
