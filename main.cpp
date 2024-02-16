@@ -1,3 +1,6 @@
+//
+// Highly Scalable SIMD approach for Efficiently Mining Maximal Frequent Itemsets
+//
 #include <algorithm>
 #include <assert.h>
 #include <memory>
