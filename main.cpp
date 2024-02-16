@@ -7,362 +7,241 @@
 
 #define REMOVE_EXISTING_PATTERN_FROM_DATA
 
-using hash_t = uint64_t;
+using id_t = uint64_t;
 
 struct Dataset
 {
-    struct Session
+    struct Transaction
     {
-        std::unordered_set<hash_t> uniqueHashes; // we don't really need hash table here, sorted array will work fine
-        std::vector<hash_t> hashes;              // linearized version of the above unordered_set
-
-        Session() = default;
-        Session(std::initializer_list<hash_t> list)
-        {
-            uniqueHashes = list;
-            hashes.insert(hashes.end(), uniqueHashes.begin(), uniqueHashes.end());
-            std::sort(hashes.begin(), hashes.end()); // to beautify print
-        }
+        std::unordered_set<id_t> uniqueIds;
+        Transaction() = default;
+        Transaction(std::initializer_list<id_t> list) { uniqueIds = list; }
     };
 
-    std::vector<Session> sessions;
+    std::vector<Transaction> transactions;
 
-    void clear() { sessions.clear(); }
+    void clear() { transactions.clear(); }
 };
 
-struct Histogram
+struct Bitset
 {
-    std::unordered_map<hash_t, size_t> _hashToIndex;
-    std::vector<hash_t> _indexToHash;
+    using Bitword = uint64_t;
+    static constexpr size_t kBitwordSizeInBits = sizeof(Bitword) * 8;
 
-    std::vector<std::pair<hash_t, uint64_t>> hashesSortedByFreq;
+    inline size_t roundupToBitwords(size_t numBits) { return (numBits + kBitwordSizeInBits - 1) / kBitwordSizeInBits; }
 
-    std::vector<uint64_t> bins;
+    std::vector<Bitword> bitwords;
 
-    void trim_left()
+    Bitset() = delete;
+
+    Bitset(size_t numBits)
     {
-        bins.erase(bins.begin());
-        hash_t mostPopularHash = hashesSortedByFreq.front().first;
-        hashesSortedByFreq.erase(hashesSortedByFreq.begin());
+        size_t numBitwords = roundupToBitwords(numBits);
+        bitwords.resize(numBitwords, Bitword(0));
+    }
+
+    size_t size() const { return bitwords.size() * kBitwordSizeInBits; }
+
+    void set(size_t bitIndex)
+    {
+        size_t bitwordIndex = bitIndex / kBitwordSizeInBits;
+        assert(bitwordIndex < bitwords.size());
+        Bitword& bitword = bitwords[bitwordIndex];
+        Bitword mask = (Bitword(1) << (Bitword(bitIndex) % Bitword(kBitwordSizeInBits)));
+        bitword |= mask;
+    }
+
+    void reset(size_t bitIndex)
+    {
+        size_t bitwordIndex = bitIndex / kBitwordSizeInBits;
+        assert(bitwordIndex < bitwords.size());
+        Bitword& bitword = bitwords[bitwordIndex];
+        Bitword mask = (Bitword(1) << (Bitword(bitIndex) % Bitword(kBitwordSizeInBits)));
+        bitword &= ~mask;
+    }
+
+    void toggle(size_t bitIndex)
+    {
+        size_t bitwordIndex = bitIndex / kBitwordSizeInBits;
+        assert(bitwordIndex < bitwords.size());
+        Bitword& bitword = bitwords[bitwordIndex];
+        Bitword mask = (Bitword(1) << (Bitword(bitIndex) % Bitword(kBitwordSizeInBits)));
+        bitword ^= mask;
+    }
+
+    bool get(size_t bitIndex) const
+    {
+        size_t bitwordIndex = bitIndex / kBitwordSizeInBits;
+        assert(bitwordIndex < bitwords.size());
+        const Bitword& bitword = bitwords[bitwordIndex];
+        Bitword mask = (Bitword(1) << (Bitword(bitIndex) % Bitword(kBitwordSizeInBits)));
+        return ((bitword & mask) != 0);
+    }
+
+    inline size_t count() const
+    {
+        size_t numWords = bitwords.size();
+        size_t numEnabledBits = 0;
+        for (size_t i = 0; i < numWords; i++)
+        {
+            numEnabledBits += size_t(__popcnt64(bitwords[i]));
+        }
+        return numEnabledBits;
+    }
+
+    inline static Bitset match(const Bitset& a, const Bitset& b)
+    {
+        assert(a.bitwords.size() == b.bitwords.size());
+
+        Bitset res(a.bitwords.size());
+        size_t numWords = a.bitwords.size();
+        for (size_t i = 0; i < numWords; i++)
+        {
+            res.bitwords[i] = a.bitwords[i] & b.bitwords[i];
+        }
+        return res;
     }
 };
 
-struct Pattern
+bool operator==(const Bitset& lhs, const Bitset& rhs) { return lhs.bitwords == rhs.bitwords; }
+
+namespace std
 {
-    std::vector<hash_t> data;
+template <> struct hash<Bitset>
+{
+    std::size_t operator()(const Bitset& k) const
+    {
+        std::size_t seed = 0;
+        for (Bitset::Bitword i : k.bitwords)
+        {
+            seed ^= std::hash<Bitset::Bitword>()(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
 };
-
-bool buildHistogramAndFreq(const Dataset& dataset, Histogram& histogram)
-{
-    const std::vector<Dataset::Session>& sessions = dataset.sessions;
-
-    // find unique hashes
-    std::unordered_map<hash_t, size_t>& hashToIndex = histogram._hashToIndex;
-    hashToIndex.clear();
-    for (const Dataset::Session& session : sessions)
-    {
-        for (const hash_t& hash : session.hashes)
-        {
-            hashToIndex.emplace(hash, 0);
-        }
-    }
-
-    if (hashToIndex.size() <= 2)
-    {
-        histogram.bins.clear();
-        histogram.hashesSortedByFreq.clear();
-        histogram._hashToIndex.clear();
-        histogram._indexToHash.clear();
-        return false;
-    }
-    assert(hashToIndex.size() > 2);
-
-    // assign indices
-    std::vector<hash_t>& indexToHash = histogram._indexToHash;
-    indexToHash.clear();
-    indexToHash.resize(hashToIndex.size());
-
-    size_t index = 0;
-    for (auto it = hashToIndex.begin(); it != hashToIndex.end(); ++it)
-    {
-        it->second = index;
-        indexToHash[index] = it->first;
-        index++;
-    }
-
-    // build histogram
-    std::vector<uint64_t>& bins = histogram.bins;
-    bins.clear();
-    bins.resize(hashToIndex.size(), 0);
-
-    for (const Dataset::Session& session : sessions)
-    {
-        for (const hash_t& hash : session.hashes)
-        {
-            auto it = hashToIndex.find(hash);
-            assert(it != hashToIndex.end());
-
-            size_t bucketIndex = it->second;
-            bins[bucketIndex]++;
-        }
-    }
-
-    // find the largest bucket
-    size_t maxBucketIndex = 0;
-    uint64_t maxBucketValue = bins[0];
-    for (size_t bucketIndex = 1; bucketIndex < bins.size(); bucketIndex++)
-    {
-        uint64_t currentBucketValue = bins[bucketIndex];
-        if (currentBucketValue > maxBucketValue)
-        {
-            maxBucketIndex = bucketIndex;
-            maxBucketValue = currentBucketValue;
-        }
-    }
-
-    std::vector<std::pair<hash_t, uint64_t>>& hashesSortedByFreq = histogram.hashesSortedByFreq;
-    hashesSortedByFreq.clear();
-    for (size_t bucketIndex = 0; bucketIndex < bins.size(); bucketIndex++)
-    {
-        hash_t hash = indexToHash[bucketIndex];
-        uint64_t freq = bins[bucketIndex];
-        hashesSortedByFreq.emplace_back(hash, freq);
-    }
-
-    std::sort(hashesSortedByFreq.begin(), hashesSortedByFreq.end(),
-              [](const std::pair<hash_t, uint64_t>& lhs, const std::pair<hash_t, uint64_t>& rhs) { return lhs.second > rhs.second; });
-
-    histogram._indexToHash.clear();
-    histogram._hashToIndex.clear();
-    return true;
-}
+} // namespace std
 
 void generateToyDataSet(Dataset& dataset)
 {
-    /*
-    dataset.clear();
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5, 55}));
-    dataset.sessions.emplace_back(Dataset::Session({2, 3, 4, 5, 55, 66}));
-    dataset.sessions.emplace_back(Dataset::Session({7, 2, 3, 4, 66, 77}));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 7, 9, 10, 55}));
-    dataset.sessions.emplace_back(Dataset::Session({2, 3, 7, 55}));
-    */
-
     // clang-format off
     dataset.clear();
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5,    7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5,    7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2, 3, 4, 5            }));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({   2, 3, 4, 5, 6, 7, 8, 9}));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1, 2,    4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
-    dataset.sessions.emplace_back(Dataset::Session({1,       4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5,    7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5,    7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5            }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5            }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5            }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2, 3, 4, 5            }));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({   2, 3, 4, 5, 6, 7, 8, 9}));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1, 2,    4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1,       4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1,       4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1,       4, 5, 6         }));
+    dataset.transactions.emplace_back(Dataset::Transaction({1,       4, 5, 6         }));
     // clang-format on
-
-
-    /*
-        Patterns in the above dataset (generated using brute force algorithm):
-
-        4, 5
-        Total: 22 of 22 sessions, 100.00 %
-        2, 4
-        Total: 18 of 22 sessions, 81.82 %
-        2, 5
-        Total: 18 of 22 sessions, 81.82 %
-
-        2, 4, 5
-        Total: 18 of 22 sessions, 81.82 %
-
-        1, 2, 4, 5
-        Total: 12 of 22 sessions, 54.55 %
-        2, 3, 4, 5
-        Total: 12 of 22 sessions, 54.55 %
-        2, 4, 5, 6
-        Total: 12 of 22 sessions, 54.55 %
-
-        3, 4, 5, 7, 9
-        Total: 8 of 22 sessions, 36.36 %
-        3, 4, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-        3, 4, 5, 7, 8
-        Total: 8 of 22 sessions, 36.36 %
-        2, 3, 4, 7, 8
-        Total: 8 of 22 sessions, 36.36 %
-        2, 3, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-
-        2, 3, 4, 5, 7, 8
-        Total: 8 of 22 sessions, 36.36 %
-        2, 3, 4, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-        2, 3, 5, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-        2, 4, 5, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-
-        2, 3, 4, 5, 7, 8, 9
-        Total: 8 of 22 sessions, 36.36 %
-
-        2, 3, 4, 5, 6, 7, 8, 9
-        Total: 6 of 22 sessions, 27.27 %
-    */
 }
 
-
-
-void generateRandomDataSet(Dataset& dataset, size_t numSessions = 100, int numDifferentHashes = 100)
+// note: the resulting dataset can be smaller than minElements because we generate IDs randomly
+void generateRandomDataSet(Dataset& dataset, size_t numTransactions = 100, int minElements = 200, int maxElements = 400,
+                           int numDifferentIds = 100)
 {
+    assert(maxElements > minElements);
     srand(1379);
     dataset.clear();
+    dataset.transactions.reserve(numTransactions);
 
-    dataset.sessions.reserve(numSessions);
-    for (size_t i = 0; i < numSessions; i++)
+    int numElements = (maxElements - minElements);
+
+    for (size_t i = 0; i < numTransactions; i++)
     {
-        Dataset::Session& session = dataset.sessions.emplace_back();
+        Dataset::Transaction& transaction = dataset.transactions.emplace_back();
 
-        int numInstances = (rand() % 200) + 200;
-        session.uniqueHashes.clear();
+        int numInstances = (rand() % numElements) + minElements;
+        transaction.uniqueIds.clear();
         for (size_t j = 0; j < (size_t)numInstances; j++)
         {
-            // hash_t randomHash = rand() % 20000;
-            hash_t randomHash = rand() % numDifferentHashes;
-            session.uniqueHashes.insert(randomHash);
+            id_t randomId = rand() % numDifferentIds;
+            transaction.uniqueIds.insert(randomId);
         }
-
-        session.hashes.reserve(session.uniqueHashes.size());
-        session.hashes.insert(session.hashes.end(), session.uniqueHashes.begin(), session.uniqueHashes.end());
-        std::sort(session.hashes.begin(), session.hashes.end()); // to beautify print
     }
 }
 
-size_t getNumberOfSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+struct Mapping
 {
-    if (pattern.data.empty())
-    {
-        return 0;
-    }
+    std::unordered_map<id_t, size_t> idToIndex;
+    std::vector<id_t> indexToId;
+};
 
-    size_t numSessionsThatContainsPattern = 0;
-
-    for (const Dataset::Session& session : dataset.sessions)
-    {
-        bool patternFound = true;
-        for (size_t i = 0; i < pattern.data.size(); i++)
-        {
-            auto it = session.uniqueHashes.find(pattern.data[i]);
-            if (it == session.uniqueHashes.end())
-            {
-                patternFound = false;
-                break;
-            }
-        }
-
-        if (patternFound)
-        {
-            numSessionsThatContainsPattern++;
-        }
-    }
-
-    //
-    return numSessionsThatContainsPattern;
-}
-
-// threshold = 0.3f mean stop adding more hashes to the pattern (and return it) if less than 30% of the sessions have this pattern
-Pattern findFrequentPattern(const Dataset& dataset, const Histogram& histogram, float threshold = 0.3f)
+Mapping getDatasetMapping(const Dataset& dataset)
 {
-    //
-    size_t totalSessionsCount = dataset.sessions.size();
-    size_t numSessionsThreshold = size_t(0.5 + double(totalSessionsCount) * double(threshold));
-    numSessionsThreshold = std::max(numSessionsThreshold, size_t(1));
-    numSessionsThreshold = std::min(numSessionsThreshold, totalSessionsCount);
-
-    Pattern pattern;
-    for (size_t step = 0; step < histogram.hashesSortedByFreq.size(); step++)
+    Mapping mapping;
+    for (const Dataset::Transaction& transaction : dataset.transactions)
     {
-        pattern.data.emplace_back(histogram.hashesSortedByFreq[step].first);
-        size_t numSessions = getNumberOfSessionsThatContainsPattern(dataset, pattern);
-        if (numSessions < numSessionsThreshold)
+        for (auto it = transaction.uniqueIds.begin(); it != transaction.uniqueIds.end(); ++it)
         {
-            // remove the last hash from the pattern
-            pattern.data.pop_back();
-            break;
+            mapping.idToIndex.try_emplace(*it, 0);
         }
     }
 
-    std::sort(pattern.data.begin(), pattern.data.end()); // to beautify print
-    return pattern;
+    mapping.indexToId.resize(mapping.idToIndex.size(), 0);
+
+    size_t index = 0;
+    for (auto it = mapping.idToIndex.begin(); it != mapping.idToIndex.end(); ++it)
+    {
+        mapping.indexToId[index] = it->first;
+        it->second = index;
+        index++;
+    }
+
+    return mapping;
 }
 
-void removePatternFromDataset(Dataset& dataset, const Pattern& pattern)
+std::vector<id_t> getPattern(const Bitset& pattern, const Mapping& mapping)
 {
-    //
-    for (Dataset::Session& session : dataset.sessions)
+    std::vector<id_t> res;
+    for (size_t index = 0; index < pattern.size(); index++)
     {
-        bool patternFound = true;
-        for (size_t i = 0; i < pattern.data.size(); i++)
+        if (pattern.get(index))
         {
-            auto it = session.uniqueHashes.find(pattern.data[i]);
-            if (it == session.uniqueHashes.end())
-            {
-                patternFound = false;
-                break;
-            }
-        }
-
-        if (patternFound)
-        {
-            // remove pattern if found
-            for (size_t i = 0; i < pattern.data.size(); i++)
-            {
-                session.uniqueHashes.erase(pattern.data[i]);
-            }
-
-            // update linearized (do we really need this?)
-            session.hashes.clear();
-            session.hashes.insert(session.hashes.end(), session.uniqueHashes.begin(), session.uniqueHashes.end());
-            std::sort(session.hashes.begin(), session.hashes.end()); // to beautify print
+            assert(index < mapping.indexToId.size());
+            id_t id = mapping.indexToId[index];
+            res.emplace_back(id);
         }
     }
+    return res;
 }
 
-std::vector<size_t> getSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern)
+std::vector<size_t> getTransactionsThatMatchPattern(const Dataset& dataset, const std::vector<id_t>& pattern)
 {
     std::vector<size_t> res;
 
-    if (pattern.data.empty())
+    if (pattern.empty())
     {
         return res;
     }
 
     size_t sessionId = 0;
-    for (const Dataset::Session& session : dataset.sessions)
+    for (const Dataset::Transaction& transaction : dataset.transactions)
     {
         bool patternFound = true;
-        for (size_t i = 0; i < pattern.data.size(); i++)
+        for (size_t i = 0; i < pattern.size(); i++)
         {
-            auto it = session.uniqueHashes.find(pattern.data[i]);
-            if (it == session.uniqueHashes.end())
+            auto it = transaction.uniqueIds.find(pattern[i]);
+            if (it == transaction.uniqueIds.end())
             {
                 patternFound = false;
                 break;
             }
         }
-
         if (patternFound)
         {
             res.emplace_back(sessionId);
@@ -372,181 +251,162 @@ std::vector<size_t> getSessionsThatContainsPattern(const Dataset& dataset, const
     return res;
 }
 
-void printSessionsThatContainsPattern(const Dataset& dataset, const Pattern& pattern, bool detailed = true)
+size_t _getNumTransactionsThatMatchPattern(const std::vector<Bitset>& bitsetTransactions, const Bitset& pattern)
 {
-    if (pattern.data.empty())
+    size_t numMatched = 0;
+    size_t numEnabledBits = pattern.count();
+    for (size_t i = 0; i < bitsetTransactions.size(); i++)
     {
-        return;
+        const Bitset& a = bitsetTransactions[i];
+        if (Bitset::match(a, pattern).count() == numEnabledBits)
+        {
+            numMatched++;
+        }
     }
 
-    int numMatchedSessions = 0;
-    int sessionId = 0;
-    for (const Dataset::Session& session : dataset.sessions)
+    return numMatched;
+}
+
+void printIds(std::vector<id_t>& ids)
+{
+    // need to sort to beautify output
+    std::sort(ids.begin(), ids.end());
+    for (const id_t& id : ids)
     {
-        bool patternFound = true;
-        for (size_t i = 0; i < pattern.data.size(); i++)
-        {
-            auto it = session.uniqueHashes.find(pattern.data[i]);
-            if (it == session.uniqueHashes.end())
-            {
-                patternFound = false;
-                break;
-            }
-        }
-
-        if (patternFound)
-        {
-            numMatchedSessions++;
-
-            if (detailed)
-            {
-                printf("id[%d] = { ", sessionId);
-                for (const hash_t& hash : session.hashes)
-                {
-                    printf("%d ", int(hash));
-                }
-
-                printf("}\n");
-            }
-        }
-
-        sessionId++;
+        printf("%d ", uint32_t(id));
     }
-
-    printf("Total: %d of %d sessions, %3.2f %%\n", numMatchedSessions, int(dataset.sessions.size()),
-           100.0 * double(numMatchedSessions) / double(dataset.sessions.size()));
 }
 
 void printDataset(const Dataset& dataset)
 {
-    //
-    int sessionId = 0;
-    for (const Dataset::Session& session : dataset.sessions)
+    printf("Dataset\n");
+    int transactionId = 0;
+    for (const Dataset::Transaction& transaction : dataset.transactions)
     {
-        printf("id[%d] = { ", sessionId);
-        for (const hash_t& hash : session.hashes)
-        {
-            printf("%d ", int(hash));
-        }
-
-        printf("}\n");
-        sessionId++;
+        printf("%d: ", transactionId);
+        printIds(std::vector<id_t>(transaction.uniqueIds.begin(), transaction.uniqueIds.end()));
+        printf("\n");
+        transactionId++;
     }
 }
 
-void printPattern(const Pattern& pattern)
+void printPattern(std::vector<id_t>& pattern, const std::vector<size_t> transactionsList, size_t numTransactionsTotal)
 {
     //
-    for (size_t i = 0; i < pattern.data.size(); i++)
+    printf("%3.2f%% ; %d / %d ; ", 100.0 * double(transactionsList.size()) / double(numTransactionsTotal),
+           uint32_t(transactionsList.size()), uint32_t(numTransactionsTotal));
+    printIds(pattern);
+    printf("; ");
+    for (size_t tId : transactionsList)
     {
-        if (i > 0)
-        {
-            printf(", ");
-        }
-
-        printf("%d", int(pattern.data[i]));
+        printf("%d ", uint32_t(tId));
     }
-
     printf("\n");
 }
-
-struct Solution
-{
-    Pattern pattern;
-    Pattern patternImproved;
-
-    // matched session ids
-    std::vector<size_t> sessionIds;
-};
 
 int main()
 {
     printf("Generate dataset\n");
     Dataset dataset;
-    // generateRandomDataSet(dataset, 60000, 75);
-    generateToyDataSet(dataset);
-    printf("Done\n");
+    generateRandomDataSet(dataset, 50, 10, 20, 15);
+    // generateToyDataSet(dataset);
 
-    Dataset datasetOriginal = dataset;
+    // step1. Generate dataset mapping
+    printf("Generate mapping\n");
+    Mapping mapping = getDatasetMapping(dataset);
+    size_t bitsetSize = mapping.indexToId.size();
 
-    // printDataset(dataset);
-
-    printf("Build histogram\n");
-    Histogram histogram;
-    buildHistogramAndFreq(dataset, histogram);
-    printf("Done\n");
-
-    // step #1
-    // find frequent patterns
-    printf("\n");
-    printf("Freq patterns\n");
-
-    std::vector<Solution> solutions;
-
-    int kMaxNumberOfPatterns = 40;
-    for (int step = 0; step < kMaxNumberOfPatterns; step++)
+    // step2. Convert all transactions to bitsets
+    printf("Create bitsets\n");
+    std::vector<Bitset> bitsetTransactions;
+    for (const Dataset::Transaction& transaction : dataset.transactions)
     {
-        Solution& s = solutions.emplace_back();
-        s.pattern = findFrequentPattern(dataset, histogram, 0.2f);
-        s.sessionIds = getSessionsThatContainsPattern(dataset, s.pattern);
-
-#ifdef REMOVE_EXISTING_PATTERN_FROM_DATA
-        // remove frequent pattern from data
-        removePatternFromDataset(dataset, s.pattern);
-        if (!buildHistogramAndFreq(dataset, histogram))
+        Bitset bitset(bitsetSize);
+        for (size_t bitIndex = 0; bitIndex < mapping.indexToId.size(); bitIndex++)
         {
-            // all sessions are now empty
-            printf("Solved. All sessions are now empty\n");
-            break;
+            id_t bitId = mapping.indexToId[bitIndex];
+            auto it = transaction.uniqueIds.find(bitId);
+            if (it != transaction.uniqueIds.end())
+            {
+                bitset.set(bitIndex);
+            }
+            else
+            {
+                bitset.reset(bitIndex);
+            }
         }
-        // printf("\n");
-#else
-        // remove most popular item
-        histogram.trim_left();
-#endif
+        bitsetTransactions.emplace_back(std::move(bitset));
+    }
 
-        if (s.pattern.data.size() <= 2)
+    // step3. Find bitsets intersections and accumulate.
+    // Note: O(N^2) where N = number of transactions
+    std::unordered_map<Bitset, size_t> patterns;
+    for (size_t i = 0; i < bitsetTransactions.size(); i++)
+    {
+        const Bitset& a = bitsetTransactions[i];
+        for (size_t j = i + 1; j < bitsetTransactions.size(); j++)
         {
-            // this pattern is too smal (no longer interesting)
-            // stop looking for more patterns
-            printf("Stop. The resulting pattern is too short (%d in %d sessions). No longer interesting in solving\n",
-                   int(s.pattern.data.size()), int(s.sessionIds.size()));
-            solutions.pop_back();
-            break;
+            const Bitset& b = bitsetTransactions[j];
+            Bitset matchingBits = Bitset::match(a, b);
+            size_t numMatchedBits = matchingBits.count();
+            // printf("Num matched bits %d (%d vs %d)\n", int(numMatchedBits), int(i), int(j));
+
+            if (numMatchedBits < 3)
+            {
+                // the resulting pattern is too short - ignore
+                continue;
+            }
+
+            //printf("Num matched bits %d (%d vs %d)\n", int(numMatchedBits), int(i), int(j));
+            auto it = patterns.try_emplace(std::move(matchingBits), 1);
+            if (!it.second)
+            {
+                // if exist increase "weight" value
+                it.first->second++;
+            }
         }
     }
 
-    // step #2
-    // try to improve existing patterns (since we are removing parts of the dataset we can lose some information)
-    for (size_t si = 0; si < solutions.size(); si++)
+    // step 4 (optional)
+    // "Linearize" patterns and sort by popularity/length
+    struct Pattern
     {
-        Dataset tempDataset;
-        // copy sessions from original dataset to temp dataset
-        Solution& s = solutions[si];
-        for (size_t i = 0; i < s.sessionIds.size(); i++)
+        std::vector<id_t> data;
+        std::vector<size_t> matches;
+    };
+
+    double kThreshold = 0.3f;
+    size_t numSessionsThreshold = size_t(0.5 + double(dataset.transactions.size()) * double(kThreshold));
+    numSessionsThreshold = std::max(numSessionsThreshold, size_t(1));
+    numSessionsThreshold = std::min(numSessionsThreshold, dataset.transactions.size());
+
+    std::vector<Pattern> linPatterns;
+    for (auto it = patterns.begin(); it != patterns.end(); ++it)
+    {
+        size_t numMatches = _getNumTransactionsThatMatchPattern(bitsetTransactions, it->first);
+        if (numMatches < numSessionsThreshold)
         {
-            size_t sessionId = s.sessionIds[i];
-            tempDataset.sessions.push_back(datasetOriginal.sessions[sessionId]);
+            // this patter is too rare = skip
+            continue;
         }
 
-        buildHistogramAndFreq(tempDataset, histogram);
+        Pattern& pattern = linPatterns.emplace_back();
+        pattern.data = getPattern(it->first, mapping);
+        pattern.matches = getTransactionsThatMatchPattern(dataset, pattern.data);
+        assert(pattern.matches.size() == numMatches);
+    }
+    std::sort(linPatterns.begin(), linPatterns.end(), [](const Pattern& a, const Pattern& b) { return a.data.size() > b.data.size(); });
 
-        s.patternImproved = findFrequentPattern(dataset, histogram, 1.0f);
+    // step5 (print results)
+    printDataset(dataset);
 
-        if (s.patternImproved.data.size() > s.pattern.data.size())
-        {
-            printf("-> Improved pattern:\n");
-            printPattern(s.patternImproved);
-            printSessionsThatContainsPattern(datasetOriginal, s.patternImproved, false);
-        }
-        else
-        {
-            printf("-> Pattern:\n");
-            printPattern(s.pattern);
-            printSessionsThatContainsPattern(datasetOriginal, s.pattern, false);
-        }
+    printf("---------------\n");
+    printf("%% matches; num matches ; pattern ; matched sessions\n");
+
+    for (Pattern& pattern : linPatterns)
+    {
+        printPattern(pattern.data, pattern.matches, dataset.transactions.size());
     }
 
-    printf("Existing\n");
     return 0;
 }
