@@ -101,6 +101,19 @@ struct Bitset
         }
         return res;
     }
+
+    inline static size_t match_count(const Bitset& a, const Bitset& b)
+    {
+        assert(a.bitwords.size() == b.bitwords.size());
+
+        size_t numMatchedBits = 0;
+        size_t numWords = a.bitwords.size();
+        for (size_t i = 0; i < numWords; i++)
+        {
+            numMatchedBits += size_t(__popcnt64(a.bitwords[i] & b.bitwords[i]));
+        }
+        return numMatchedBits;
+    }
 };
 
 bool operator==(const Bitset& lhs, const Bitset& rhs) { return lhs.bitwords == rhs.bitwords; }
@@ -258,7 +271,7 @@ size_t _getNumTransactionsThatMatchPattern(const std::vector<Bitset>& bitsetTran
     for (size_t i = 0; i < bitsetTransactions.size(); i++)
     {
         const Bitset& a = bitsetTransactions[i];
-        if (Bitset::match(a, pattern).count() == numEnabledBits)
+        if (Bitset::match_count(a, pattern) == numEnabledBits)
         {
             numMatched++;
         }
@@ -308,8 +321,8 @@ int main()
 {
     printf("Generate dataset\n");
     Dataset dataset;
-    generateRandomDataSet(dataset, 5000, 1000, 2000, 3000);
-    // generateToyDataSet(dataset);
+    //generateRandomDataSet(dataset, 500, 10, 40, 35);
+    generateToyDataSet(dataset);
 
     // step1. Generate dataset mapping
     printf("Generate mapping\n");
@@ -383,7 +396,7 @@ int main()
         std::vector<size_t> matches;
     };
 
-    double kThreshold = 0.3f;
+    double kThreshold = 0.1f;
     size_t numSessionsThreshold = size_t(0.5 + double(dataset.transactions.size()) * double(kThreshold));
     numSessionsThreshold = std::max(numSessionsThreshold, size_t(1));
     numSessionsThreshold = std::min(numSessionsThreshold, dataset.transactions.size());
