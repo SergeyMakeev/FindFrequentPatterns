@@ -8,8 +8,6 @@
 #include <unordered_set>
 #include <vector>
 
-#define REMOVE_EXISTING_PATTERN_FROM_DATA
-
 using id_t = uint64_t;
 
 struct Dataset
