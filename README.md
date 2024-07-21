@@ -7,6 +7,9 @@ Another algorithm to solve this problem called MaxMiner
 https://www2.cs.sfu.ca/CourseCentral/741/jpei/readings/baya98.pdf
 and it was specifically designed to find long, stable patterns in the dataset.
 
+There is also the FP-growth algorithm
+https://dl.acm.org/doi/pdf/10.1145/335191.335372
+
 
 The proposed approach is extremely simple. Represent every unique number in the data set as a single bit in a huge bitset and then use bitwise operations to find an intersection between different transactions. 
 
